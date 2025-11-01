@@ -180,12 +180,11 @@ update_golang() {
 install_small8() {
     ./scripts/feeds install -p small8 -f xray-core xray-plugin dns2tcp dns2socks haproxy hysteria \
         naiveproxy shadowsocks-rust sing-box v2ray-core v2ray-geodata v2ray-geoview v2ray-plugin \
-        tuic-client chinadns-ng ipt2socks tcping trojan-plus simple-obfs shadowsocksr-libev \
-        luci-app-passwall v2dat mosdns luci-app-mosdns adguardhome luci-app-adguardhome ddns-go \
-        luci-app-ddns-go taskd luci-lib-xterm luci-lib-taskd luci-app-store quickstart \
-        luci-app-quickstart luci-app-istorex luci-app-cloudflarespeedtest netdata luci-app-netdata \
-        lucky luci-app-lucky luci-app-openclash luci-app-homeproxy luci-app-amlogic nikki luci-app-nikki \
-        tailscale luci-app-tailscale oaf open-app-filter luci-app-oaf easytier luci-app-easytier \
+        tuic-client chinadns-ng tcping trojan-plus simple-obfs shadowsocksr-libev \
+        luci-app-passwall v2dat adguardhome luci-app-adguardhome ddns-go \
+        luci-app-ddns-go taskd luci-lib-xterm luci-lib-taskd luci-app-store \
+        luci-app-cloudflarespeedtest netdata luci-app-netdata \
+        luci-app-openclash luci-app-homeproxy luci-app-amlogic nikki \
         msd_lite luci-app-msd_lite cups luci-app-cupsd
 }
 
@@ -251,15 +250,6 @@ fix_default_set() {
         if [ -f "$BASE_PATH/patches/tempinfo" ]; then
             \cp -f "$BASE_PATH/patches/tempinfo" "$BUILD_DIR/package/emortal/autocore/files/tempinfo"
         fi
-    fi
-}
-
-fix_miniupnpd() {
-    local miniupnpd_dir="$BUILD_DIR/feeds/packages/net/miniupnpd"
-    local patch_file="999-chanage-default-leaseduration.patch"
-
-    if [ -d "$miniupnpd_dir" ] && [ -f "$BASE_PATH/patches/$patch_file" ]; then
-        install -Dm644 "$BASE_PATH/patches/$patch_file" "$miniupnpd_dir/patches/$patch_file"
     fi
 }
 
@@ -457,20 +447,6 @@ boot() {
     sed -i '/drop_caches/d' /etc/crontabs/root
     echo "15 3 * * * sync && echo 3 > /proc/sys/vm/drop_caches" >>/etc/crontabs/root
 
-    # 删除现有的 wireguard_watchdog 任务
-    sed -i '/wireguard_watchdog/d' /etc/crontabs/root
-
-    # 获取 WireGuard 接口名称
-    local wg_ifname=$(wg show | awk '/interface/ {print $2}')
-
-    if [ -n "$wg_ifname" ]; then
-        # 添加新的 wireguard_watchdog 任务，每10分钟执行一次
-        echo "*/15 * * * * /usr/bin/wireguard_watchdog" >>/etc/crontabs/root
-        uci set system.@system[0].cronloglevel='9'
-        uci commit system
-        /etc/init.d/cron restart
-    fi
-
     # 应用新的 crontab 配置
     crontab /etc/crontabs/root
 }
@@ -652,8 +628,6 @@ function add_backup_info_to_sysupgrade() {
     if [ -f "$conf_path" ]; then
         cat >"$conf_path" <<'EOF'
 /etc/AdGuardHome.yaml
-/etc/easytier
-/etc/lucky/
 EOF
     fi
 }
@@ -679,26 +653,6 @@ function update_script_priority() {
     fi
 }
 
-update_mosdns_deconfig() {
-    local mosdns_conf="$BUILD_DIR/feeds/small8/luci-app-mosdns/root/etc/config/mosdns"
-    if [ -d "${mosdns_conf%/*}" ] && [ -f "$mosdns_conf" ]; then
-        sed -i 's/8000/300/g' "$mosdns_conf"
-        sed -i 's/5335/5336/g' "$mosdns_conf"
-    fi
-}
-
-fix_quickstart() {
-    local file_path="$BUILD_DIR/feeds/small8/luci-app-quickstart/luasrc/controller/istore_backend.lua"
-    local url="https://gist.githubusercontent.com/puteulanus/1c180fae6bccd25e57eb6d30b7aa28aa/raw/istore_backend.lua"
-    # 下载新的istore_backend.lua文件并覆盖
-    if [ -f "$file_path" ]; then
-        echo "正在修复 quickstart..."
-        if ! curl -fsSL -o "$file_path" "$url"; then
-            echo "错误：从 $url 下载 istore_backend.lua 失败" >&2
-            exit 1
-        fi
-    fi
-}
 
 update_oaf_deconfig() {
     local conf_path="$BUILD_DIR/feeds/small8/open-app-filter/files/appfilter.config"
@@ -725,18 +679,6 @@ update_oaf_deconfig() {
 }
 EOF
         chmod +x "$disable_path"
-    fi
-}
-
-add_timecontrol() {
-    local timecontrol_dir="$BUILD_DIR/package/luci-app-timecontrol"
-    local repo_url="https://github.com/sirpdboy/luci-app-timecontrol.git"
-    # 删除旧的目录（如果存在）
-    rm -rf "$timecontrol_dir" 2>/dev/null
-    echo "正在添加 luci-app-timecontrol..."
-    if ! git clone --depth 1 "$repo_url" "$timecontrol_dir"; then
-        echo "错误：从 $repo_url 克隆 luci-app-timecontrol 仓库失败" >&2
-        exit 1
     fi
 }
 
@@ -793,36 +735,6 @@ update_geoip() {
     fi
 }
 
-update_lucky() {
-    # 从补丁文件名中提取版本号
-    local version
-    version=$(find "$BASE_PATH/patches" -name "lucky_*.tar.gz" -printf "%f\n" | head -n 1 | sed -n 's/^lucky_\(.*\)_Linux.*$/\1/p')
-    if [ -z "$version" ]; then
-        echo "Warning: 未找到 lucky 补丁文件，跳过更新。" >&2
-        return 1
-    fi
-
-    local makefile_path="$BUILD_DIR/feeds/small8/lucky/Makefile"
-    if [ ! -f "$makefile_path" ]; then
-        echo "Warning: lucky Makefile not found. Skipping." >&2
-        return 1
-    fi
-
-    echo "正在更新 lucky Makefile..."
-    # 使用本地补丁文件，而不是下载
-    local patch_line="\\t[ -f \$(TOPDIR)/../patches/lucky_${version}_Linux_\$(LUCKY_ARCH)_wanji.tar.gz ] && install -Dm644 \$(TOPDIR)/../patches/lucky_${version}_Linux_\$(LUCKY_ARCH)_wanji.tar.gz \$(PKG_BUILD_DIR)/\$(PKG_NAME)_\$(PKG_VERSION)_Linux_\$(LUCKY_ARCH).tar.gz"
-
-    # 确保 Build/Prepare 部分存在，然后在其后添加我们的行
-    if grep -q "Build/Prepare" "$makefile_path"; then
-        sed -i "/Build\\/Prepare/a\\$patch_line" "$makefile_path"
-        # 删除任何现有的 wget 命令
-        sed -i '/wget/d' "$makefile_path"
-        echo "lucky Makefile 更新完成。"
-    else
-        echo "Warning: lucky Makefile 中未找到 'Build/Prepare'。跳过。" >&2
-    fi
-}
-
 fix_rust_compile_error() {
     if [ -f "$BUILD_DIR/feeds/packages/lang/rust/Makefile" ]; then
         sed -i 's/download-ci-llvm=true/download-ci-llvm=false/g' "$BUILD_DIR/feeds/packages/lang/rust/Makefile"
@@ -852,35 +764,6 @@ update_smartdns() {
     if ! git clone --depth=1 "$LUCI_APP_SMARTDNS_REPO" "$LUCI_APP_SMARTDNS_DIR"; then
         echo "错误：从 $LUCI_APP_SMARTDNS_REPO 克隆 luci-app-smartdns 仓库失败" >&2
         exit 1
-    fi
-}
-
-update_diskman() {
-    local path="$BUILD_DIR/feeds/luci/applications/luci-app-diskman"
-    local repo_url="https://github.com/lisaac/luci-app-diskman.git"
-    if [ -d "$path" ]; then
-        echo "正在更新 diskman..."
-        cd "$BUILD_DIR/feeds/luci/applications" || return # 显式路径避免歧义
-        \rm -rf "luci-app-diskman"                        # 直接删除目标目录
-
-        if ! git clone --filter=blob:none --no-checkout "$repo_url" diskman; then
-            echo "错误：从 $repo_url 克隆 diskman 仓库失败" >&2
-            exit 1
-        fi
-        cd diskman || return
-
-        git sparse-checkout init --cone
-        git sparse-checkout set applications/luci-app-diskman || return # 错误处理
-
-        git checkout --quiet # 静默检出避免冗余输出
-
-        mv applications/luci-app-diskman ../luci-app-diskman || return # 添加错误检查
-        cd .. || return
-        \rm -rf diskman
-        cd "$BUILD_DIR"
-
-        sed -i 's/fs-ntfs /fs-ntfs3 /g' "$path/Makefile"
-        sed -i '/ntfs-3g-utils /d' "$path/Makefile"
     fi
 }
 
@@ -1007,13 +890,6 @@ update_argon() {
     echo "luci-theme-argon 更新完成"
 }
 
-fix_easytier_lua() {
-    local file_path="$BUILD_DIR/package/feeds/small8/luci-app-easytier/luasrc/model/cbi/easytier.lua"
-    if [ -f "$file_path" ]; then
-        sed -i 's/util.pcdata/xml.pcdata/g' "$file_path"
-    fi
-}
-
 # 更新 nginx-mod-ubus 模块
 update_nginx_ubus_module() {
     local makefile_path="$BUILD_DIR/feeds/packages/net/nginx/Makefile"
@@ -1040,7 +916,6 @@ main() {
     remove_tweaked_packages
     update_homeproxy
     fix_default_set
-    fix_miniupnpd
     update_golang
     change_dnsmasq2full
     fix_mk_def_depends
@@ -1061,16 +936,11 @@ main() {
     fix_compile_coremark
     update_dnsmasq_conf
     add_backup_info_to_sysupgrade
-    update_mosdns_deconfig
-    fix_quickstart
     update_oaf_deconfig
-    add_timecontrol
     add_gecoosac
     add_quickfile
-    update_lucky
     fix_rust_compile_error
     update_smartdns
-    update_diskman
     set_nginx_default_config
     update_uwsgi_limit_as
     update_argon
@@ -1078,7 +948,6 @@ main() {
     check_default_settings
     install_opkg_distfeeds
     install_feeds
-    fix_easytier_lua
     update_adguardhome
     update_script_priority
     update_geoip
